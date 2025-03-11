@@ -9,7 +9,7 @@ matplotlib==3.7.1
 numpy==1.23.5
 opencv-contrib-python==4.8.0.76
 opencv-python==4.8.0.76
-pillow==9.4.0
+pillow==11.0.0
 scikit-image==0.19.3
 scipy==1.11.3
 tensorboard==2.14.1
