@@ -2347,7 +2347,7 @@ class MaskRCNN(object):
             keras.callbacks.TensorBoard(log_dir=self.log_dir,
                                         histogram_freq=0, write_graph=True, write_images=False),
             keras.callbacks.ModelCheckpoint(filepath=self.checkpoint_path,
-                                            verbose=0, save_weights_only=False, monitor="val_loss",
+                                            verbose=0, save_weights_only=True, monitor="val_loss",
 					   save_best_only=True, mode="min" ),
 	    keras.callbacks.EarlyStopping(monitor='val_loss', patience= 4),
 		
