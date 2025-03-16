@@ -2371,7 +2371,7 @@ class MaskRCNN(object):
         else:
             workers = multiprocessing.cpu_count()
 
-        self.keras_model.fit(
+        history = self.keras_model.fit(
             train_generator,
             initial_epoch=self.epoch,
             epochs=epochs,
@@ -2384,6 +2384,7 @@ class MaskRCNN(object):
             use_multiprocessing=False,
         )
         self.epoch = max(self.epoch, epochs)
+	return history
 
     def mold_inputs(self, images):
         """Takes a list of images and modifies them to the format expected
