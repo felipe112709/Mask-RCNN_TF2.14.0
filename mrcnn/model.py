@@ -2349,8 +2349,7 @@ class MaskRCNN(object):
         callbacks = [
             keras.callbacks.ModelCheckpoint(filepath=self.checkpoint_path,
                                             verbose=1, save_weights_only=True, monitor="val_loss",
-					   save_best_only=True, mode="min" ),
-	    keras.callbacks.EarlyStopping(monitor='val_loss', patience= 5)
+					   save_best_only=True, mode="min" )
 		
         ]
 	
