@@ -46,7 +46,7 @@ class ParallelModel(KM.Model):
                                             self.inner_model.inputs)}
 
         output_names = self.inner_model.output_names
-        outputs_all =
+        outputs_all = []
         for i in range(len(self.inner_model.outputs)):
             outputs_all.append([])
 
