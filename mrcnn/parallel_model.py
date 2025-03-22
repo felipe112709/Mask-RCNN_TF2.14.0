@@ -189,10 +189,7 @@ if __name__ == "__main__":
     # Train
     parallel_model.fit(
         datagen.flow(x_train, y_train, batch_size=64),
-        steps_per_epoch=50, epochs=10, verbose=1,
+        steps_per_epoch=50, epochs=1, verbose=1,
         validation_data=(x_test, y_test),
         callbacks=[TensorBoard(log_dir=MODEL_DIR, write_graph=True)]
     )
-                       epochs=1,
-                       validation_data=(x_test, y_test),
-                       callbacks=[tf.keras.callbacks.TensorBoard(log_dir='./logs')])
