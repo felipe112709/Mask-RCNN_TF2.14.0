@@ -16,120 +16,175 @@ class ParallelModel(KM.Model):
         keras_model: The Keras model to parallelize
         gpu_count: Number of GPUs. Must be > 1
         """
-        # Call super().__init__ first as required by Keras
+        # Initialize parent class
         super(ParallelModel, self).__init__()
-        
         self.inner_model = keras_model
         self.gpu_count = gpu_count
-        
-        # Define input layer(s) matching the input layer(s) of the original model
-        self.inputs_list = []
-        for input_tensor in self.inner_model.inputs:
-            input_shape = K.int_shape(input_tensor)
-            input_dtype = input_tensor.dtype
-            new_input = KL.Input(shape=input_shape[1:], dtype=input_dtype, name=input_tensor.name)
-            self.inputs_list.append(new_input)
-            
-        # Build the parallel model
-        self.outputs_list = self.make_parallel()
-        
-        # Call the Model's build method with the new inputs and outputs
-        self._init_graph_network(self.inputs_list, self.outputs_list)
-        
-    def _redirect_to_inner(self, attrname):
-        """Redirect loading and saving methods to the inner model."""
-        if 'load' in attrname or 'save' in attrname:
-            return getattr(self.inner_model, attrname)
-        return super(ParallelModel, self).__getattribute__(attrname)
-        
-    def __getattribute__(self, attrname):
-        """Redirect loading and saving methods to the inner model. That's where
-        the weights are stored."""
-        try:
-            # Try the standard attribute lookup first
-            return super(ParallelModel, self).__getattribute__(attrname)
-        except AttributeError:
-            if 'load' in attrname or 'save' in attrname:
-                return getattr(self.inner_model, attrname)
-            raise
 
+    def call(self, inputs, training=None):
+        """Override the call method to implement the multi-GPU functionality."""
+        # Convert single input to list for uniform processing
+        if not isinstance(inputs, list):
+            inputs = [inputs]
+            
+        # List to collect outputs from each GPU
+        all_outputs = []
+        
+        # Process batch splits on each GPU
+        batch_size = tf.shape(inputs[0])[0]
+        split_size = batch_size // self.gpu_count
+        remainder = batch_size % self.gpu_count
+        
+        start_idx = 0
+        for i in range(self.gpu_count):
+            # Calculate correct split size for this GPU
+            if i < remainder:
+                size = split_size + 1
+            else:
+                size = split_size
+                
+            # Skip this GPU if it would get 0 examples
+            if size == 0:
+                continue
+                
+            # Calculate end index for this batch
+            end_idx = start_idx + size
+                
+            # Process on specific GPU
+            with tf.device(f'/gpu:{i}'):
+                # Slice the inputs for this GPU
+                gpu_inputs = []
+                for inp in inputs:
+                    sliced = inp[start_idx:end_idx]
+                    gpu_inputs.append(sliced)
+                
+                # If there's only one input, unpack it from the list
+                if len(gpu_inputs) == 1:
+                    gpu_inputs = gpu_inputs[0]
+                
+                # Forward pass through the inner model
+                outputs = self.inner_model(gpu_inputs, training=training)
+                
+                # Convert single output to list for uniform collection
+                if not isinstance(outputs, list):
+                    outputs = [outputs]
+                    
+                # First GPU - initialize output lists
+                if i == 0:
+                    for _ in range(len(outputs)):
+                        all_outputs.append([])
+                        
+                # Collect outputs from this GPU
+                for j, output in enumerate(outputs):
+                    all_outputs[j].append(output)
+            
+            # Update start index for next iteration
+            start_idx = end_idx
+        
+        # Combine results from all GPUs
+        merged_outputs = []
+        
+        with tf.device('/cpu:0'):
+            for outputs_list in all_outputs:
+                # Skip empty lists (could happen if some GPUs got 0 examples)
+                if not outputs_list:
+                    continue
+                    
+                # Merge the outputs - use concatenate for normal outputs
+                merged = tf.concat(outputs_list, axis=0)
+                merged_outputs.append(merged)
+            
+        # If there's only one output, unpack it from the list
+        if len(merged_outputs) == 1:
+            return merged_outputs[0]
+        else:
+            return merged_outputs
+            
+    def train_step(self, data):
+        """Override the train_step method to handle multi-GPU training."""
+        # Unpack data if it's a tuple (data, labels)
+        if isinstance(data, tuple):
+            data = data[0]
+            labels = data[1]
+        else:
+            # For data generators
+            labels = None
+            
+        with tf.GradientTape() as tape:
+            # Forward pass
+            y_pred = self(data, training=True)
+            
+            # If labels weren't unpacked earlier, get them now
+            if labels is None:
+                if isinstance(data, dict):
+                    labels = data.get('labels', data.get('y', None))
+                
+            # Compute loss
+            loss = self.compiled_loss(labels, y_pred)
+            
+        # Compute gradients
+        gradients = tape.gradient(loss, self.trainable_variables)
+        
+        # Update weights
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+        
+        # Update metrics
+        self.compiled_metrics.update_state(labels, y_pred)
+        
+        # Return metrics
+        results = {m.name: m.result() for m in self.metrics}
+        results.update({"loss": loss})
+        return results
+    
+    def test_step(self, data):
+        """Override the test_step method to handle multi-GPU validation."""
+        # Unpack data
+        if isinstance(data, tuple):
+            data = data[0]
+            labels = data[1]
+        else:
+            # For data generators
+            labels = None
+            
+        # Forward pass
+        y_pred = self(data, training=False)
+        
+        # If labels weren't unpacked earlier, get them now
+        if labels is None:
+            if isinstance(data, dict):
+                labels = data.get('labels', data.get('y', None))
+            
+        # Update metrics
+        self.compiled_loss(labels, y_pred)
+        self.compiled_metrics.update_state(labels, y_pred)
+        
+        # Return metrics
+        return {m.name: m.result() for m in self.metrics}
+    
+    def compile(self, **kwargs):
+        """Override compile to also compile the inner model."""
+        self.inner_model.compile(**kwargs)
+        super(ParallelModel, self).compile(**kwargs)
+    
     def summary(self, *args, **kwargs):
-        """Override summary() to display summaries of both, the wrapper
-        and inner models."""
+        """Override summary() to display summaries of both models."""
         print("Parallel Model Summary:")
         super(ParallelModel, self).summary(*args, **kwargs)
         print("\nInner Model Summary:")
         self.inner_model.summary(*args, **kwargs)
-
-    def make_parallel(self):
-        """Creates a new wrapper model that consists of multiple replicas of
-        the original model placed on different GPUs.
-        """
-        # Get input_names from the inputs list
-        input_names = [input_tensor.name for input_tensor in self.inputs_list]
+    
+    def save(self, filepath, **kwargs):
+        """Override save to save the inner model instead."""
+        self.inner_model.save(filepath, **kwargs)
         
-        # Slice inputs. Slice inputs on the CPU to avoid sending a copy
-        # of the full inputs to all GPUs. Saves on bandwidth and memory.
-        with tf.device('/cpu:0'):
-            input_slices = {name: tf.split(x, self.gpu_count)
-                           for name, x in zip(input_names, self.inputs_list)}
-
-        # Handle single or multiple outputs
-        if isinstance(self.inner_model.outputs, list):
-            num_outputs = len(self.inner_model.outputs)
-            output_names = [output.name for output in self.inner_model.outputs]
-        else:
-            num_outputs = 1
-            output_names = [self.inner_model.output.name]
-            
-        outputs_all = [[] for _ in range(num_outputs)]
-
-        # Run the model call() on each GPU to place the ops there
-        for i in range(self.gpu_count):
-            with tf.device('/gpu:%d' % i):
-                with tf.name_scope('tower_%d' % i):
-                    # Run a slice of inputs through this replica
-                    inputs_for_replica = []
-                    for name, tensor in zip(input_names, self.inputs_list):
-                        slice_idx = i
-                        slice_input = KL.Lambda(
-                            lambda x, idx=slice_idx: input_slices[name][idx],
-                            name=f'slice_{name}_{i}'
-                        )(tensor)
-                        inputs_for_replica.append(slice_input)
-                    
-                    # Create the model replica and get the outputs
-                    outputs = self.inner_model(inputs_for_replica)
-                    
-                    # Handle case where model has a single output
-                    if not isinstance(outputs, list):
-                        outputs = [outputs]
-                        
-                    # Save the outputs for merging back together later
-                    for l, o in enumerate(outputs):
-                        outputs_all[l].append(o)
-
-        # Merge outputs on CPU
-        with tf.device('/cpu:0'):
-            merged = []
-            for l, outputs in enumerate(outputs_all):
-                name = output_names[l] if l < len(output_names) else f'output_{l}'
-                
-                # Concatenate or average outputs?
-                # Outputs usually have a batch dimension and we concatenate
-                # across it. If they don't, then the output is likely a loss
-                # or a metric value that gets averaged across the batch.
-                # Keras expects losses and metrics to be scalars.
-                if K.int_shape(outputs[0]) == ():
-                    # Average
-                    m = KL.Lambda(lambda o: tf.add_n(o) / len(outputs), name=f'mean_{name}')(outputs)
-                else:
-                    # Concatenate
-                    m = KL.Concatenate(axis=0, name=f'concat_{name}')(outputs)
-                merged.append(m)
-                
-        return merged
-
+    def save_weights(self, filepath, **kwargs):
+        """Override save_weights to save inner model weights."""
+        self.inner_model.save_weights(filepath, **kwargs)
+        
+    def load_weights(self, filepath, **kwargs):
+        """Override load_weights to load inner model weights."""
+        self.inner_model.load_weights(filepath, **kwargs)
+        
 
 # Example usage
 if __name__ == "__main__":
@@ -182,14 +237,14 @@ if __name__ == "__main__":
     optimizer = SGD(learning_rate=0.01, momentum=0.9, clipnorm=5.0)
 
     parallel_model.compile(loss='sparse_categorical_crossentropy',
-                        optimizer=optimizer, metrics=['accuracy'])
+                          optimizer=optimizer, metrics=['accuracy'])
 
     parallel_model.summary()
 
     # Train
     parallel_model.fit(
-        datagen.flow(x_train, y_train, batch_size=64),
-        steps_per_epoch=50, epochs=1, verbose=1,
+        datagen.flow(x_train, y_train, batch_size=64 * GPU_COUNT),
+        steps_per_epoch=50, epochs=10, verbose=1,
         validation_data=(x_test, y_test),
         callbacks=[TensorBoard(log_dir=MODEL_DIR, write_graph=True)]
     )
