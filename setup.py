@@ -34,7 +34,7 @@ except Exception:
 setup(
     name='mask-rcnn-tf2',
     version='1.0',
-    url='https://github.com/felipe112709/Mask-RCNN_TF2.14.0.',
+    url='https://github.com/felipe112709/Mask-RCNN_TF2.14.0',
     author='Andres Felipe',
     author_email='afmo96288@gmail.com',
     license='MIT',
